@@ -15,14 +15,10 @@ import (
 
 // Payload is the body sent to the OpenClaw hooks endpoint.
 type Payload struct {
-	Type       string          `json:"type"`
-	SessionKey string          `json:"sessionKey"`
-	ChannelID  string          `json:"channelId"`
-	MessageID  string          `json:"messageId,omitempty"`
-	Content    string          `json:"content,omitempty"`
-	SenderID   string          `json:"senderId,omitempty"`
-	TurnID     string          `json:"turnId,omitempty"`
-	Data       json.RawMessage `json:"data,omitempty"`
+	Message    string `json:"message"`
+	SessionKey string `json:"sessionKey"`
+	Name       string `json:"name,omitempty"`
+	Deliver    bool   `json:"deliver"`
 }
 
 // Forwarder sends event payloads to the OpenClaw hooks endpoint.
@@ -67,6 +63,6 @@ func (f *Forwarder) Send(ctx context.Context, p *Payload) error {
 		return fmt.Errorf("hook returned HTTP %d: %s", resp.StatusCode, string(respBody))
 	}
 
-	f.logger.Debug("hook delivered", "type", p.Type, "sessionKey", p.SessionKey, "status", resp.StatusCode)
+	f.logger.Debug("hook delivered", "name", p.Name, "sessionKey", p.SessionKey, "status", resp.StatusCode)
 	return nil
 }

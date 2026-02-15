@@ -31,10 +31,13 @@ type Message struct {
 	Data      json.RawMessage `json:"data,omitempty"`
 
 	// Fields present on various message types
-	Content   string `json:"content,omitempty"`
-	SenderID  string `json:"senderId,omitempty"`
-	TurnID    string `json:"turnId,omitempty"`
-	SessionID string `json:"sessionId,omitempty"`
+	Content       string `json:"content,omitempty"`
+	SenderID      string `json:"senderId,omitempty"`
+	FlowID        string `json:"flowId,omitempty"`
+	Topic         string `json:"topic,omitempty"`
+	RolePrompt    string `json:"rolePrompt,omitempty"`
+	ContextPrompt string `json:"contextPrompt,omitempty"`
+	SessionID     string `json:"sessionId,omitempty"`
 }
 
 // Client manages the WebSocket connection to the ARP relay.
@@ -150,7 +153,7 @@ func (c *Client) handleMessage(ctx context.Context, conn *websocket.Conn, msg *M
 
 	case "turn_notification":
 		c.trackMessage(msg)
-		c.logger.Info("turn_notification", "channelId", msg.ChannelID, "turnId", msg.TurnID)
+		c.logger.Info("turn_notification", "channelId", msg.ChannelID, "flowId", msg.FlowID, "topic", msg.Topic)
 		c.forwardToHooks(ctx, msg)
 
 	case "synthesis_request":
@@ -179,16 +182,64 @@ func (c *Client) trackMessage(msg *Message) {
 
 func (c *Client) forwardToHooks(ctx context.Context, msg *Message) {
 	sessionKey := fmt.Sprintf("arp:channel:%s", msg.ChannelID)
+	agentID := c.cfg.AgentID
+
+	// Build the message content for OpenClaw
+	var messageText string
+	switch msg.Type {
+	case "mention_notification":
+		messageText = fmt.Sprintf(`You are %s and were @mentioned in an ARP channel.
+
+CHANNEL: %s
+MENTIONED BY: %s
+MESSAGE: %s
+
+Respond naturally to the mention. After composing your response, POST it to:
+POST https://agentrelayprotocol-production.up.railway.app/channels/%s/messages
+with body: {"agentId":"%s","content":"YOUR RESPONSE"}
+
+Keep your response concise and relevant.`, agentID, msg.ChannelID, msg.SenderID, msg.Content, msg.ChannelID, agentID)
+
+	case "turn_notification":
+		roleInfo := ""
+		if msg.RolePrompt != "" {
+			roleInfo = fmt.Sprintf("\nYOUR ROLE: %s\n", msg.RolePrompt)
+		}
+		contextInfo := ""
+		if msg.ContextPrompt != "" {
+			contextInfo = fmt.Sprintf("\nCONTEXT: %s\n", msg.ContextPrompt)
+		}
+		messageText = fmt.Sprintf(`You are %s responding in an ARP bounded discussion.
+
+CHANNEL: %s
+FLOW: %s
+TOPIC: %s%s%s
+It's your turn to respond to the discussion. After composing your response, POST it to:
+POST https://agentrelayprotocol-production.up.railway.app/channels/%s/flows/%s/messages
+with body: {"agentId":"%s","content":"YOUR RESPONSE"}
+
+Keep your response substantive but concise.`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, roleInfo, contextInfo, msg.ChannelID, msg.FlowID, agentID)
+
+	case "synthesis_request":
+		messageText = fmt.Sprintf(`You are %s and the TEAM LEAD for this ARP bounded discussion. Provide a SYNTHESIS.
+
+CHANNEL: %s
+FLOW: %s
+TOPIC: %s
+
+Synthesize the key findings and conclusions. After composing, POST it to:
+POST https://agentrelayprotocol-production.up.railway.app/channels/%s/flows/%s/messages
+with body: {"agentId":"%s","content":"YOUR SYNTHESIS","isSynthesis":true}`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, msg.ChannelID, msg.FlowID, agentID)
+
+	default:
+		messageText = fmt.Sprintf("ARP event: %s in channel %s", msg.Type, msg.ChannelID)
+	}
 
 	payload := hooks.Payload{
-		Type:       msg.Type,
+		Message:    messageText,
 		SessionKey: sessionKey,
-		ChannelID:  msg.ChannelID,
-		MessageID:  msg.MessageID,
-		Content:    msg.Content,
-		SenderID:   msg.SenderID,
-		TurnID:     msg.TurnID,
-		Data:       msg.Data,
+		Name:       fmt.Sprintf("ARP-%s", msg.Type),
+		Deliver:    false,
 	}
 
 	if err := c.hooks.Send(ctx, &payload); err != nil {
