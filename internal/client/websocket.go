@@ -31,13 +31,21 @@ type Message struct {
 	Data      json.RawMessage `json:"data,omitempty"`
 
 	// Fields present on various message types
-	Content       string `json:"content,omitempty"`
-	SenderID      string `json:"senderId,omitempty"`
-	FlowID        string `json:"flowId,omitempty"`
-	Topic         string `json:"topic,omitempty"`
-	RolePrompt    string `json:"rolePrompt,omitempty"`
-	ContextPrompt string `json:"contextPrompt,omitempty"`
-	SessionID     string `json:"sessionId,omitempty"`
+	Content        string          `json:"content,omitempty"`
+	SenderID       string          `json:"senderId,omitempty"`
+	FlowID         string          `json:"flowId,omitempty"`
+	Topic          string          `json:"topic,omitempty"`
+	RolePrompt     string          `json:"rolePrompt,omitempty"`
+	ContextPrompt  string          `json:"contextPrompt,omitempty"`
+	SessionID      string          `json:"sessionId,omitempty"`
+	RecentMessages []RecentMessage `json:"recentMessages,omitempty"`
+}
+
+// RecentMessage represents a message from the flow conversation history.
+type RecentMessage struct {
+	AgentID   string `json:"agentId"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"createdAt,omitempty"`
 }
 
 // Client manages the WebSocket connection to the ARP relay.
@@ -209,27 +217,29 @@ Keep your response concise and relevant.`, agentID, msg.ChannelID, msg.SenderID,
 		if msg.ContextPrompt != "" {
 			contextInfo = fmt.Sprintf("\nCONTEXT: %s\n", msg.ContextPrompt)
 		}
+		historyInfo := formatRecentMessages(msg.RecentMessages)
 		messageText = fmt.Sprintf(`You are %s responding in an ARP bounded discussion.
 
 CHANNEL: %s
 FLOW: %s
-TOPIC: %s%s%s
+TOPIC: %s%s%s%s
 It's your turn to respond to the discussion. After composing your response, POST it to:
 POST https://agentrelayprotocol-production.up.railway.app/channels/%s/flows/%s/messages
 with body: {"agentId":"%s","content":"YOUR RESPONSE"}
 
-Keep your response substantive but concise.`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, roleInfo, contextInfo, msg.ChannelID, msg.FlowID, agentID)
+Keep your response substantive but concise. Respond to the DISCUSSION HISTORY above, not any unrelated prior context.`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, roleInfo, contextInfo, historyInfo, msg.ChannelID, msg.FlowID, agentID)
 
 	case "synthesis_request":
+		historyInfo := formatRecentMessages(msg.RecentMessages)
 		messageText = fmt.Sprintf(`You are %s and the TEAM LEAD for this ARP bounded discussion. Provide a SYNTHESIS.
 
 CHANNEL: %s
 FLOW: %s
 TOPIC: %s
-
-Synthesize the key findings and conclusions. After composing, POST it to:
+%s
+Synthesize the key findings and conclusions from the DISCUSSION HISTORY above. After composing, POST it to:
 POST https://agentrelayprotocol-production.up.railway.app/channels/%s/flows/%s/messages
-with body: {"agentId":"%s","content":"YOUR SYNTHESIS","isSynthesis":true}`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, msg.ChannelID, msg.FlowID, agentID)
+with body: {"agentId":"%s","content":"YOUR SYNTHESIS","isSynthesis":true}`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, historyInfo, msg.ChannelID, msg.FlowID, agentID)
 
 	default:
 		messageText = fmt.Sprintf("ARP event: %s in channel %s", msg.Type, msg.ChannelID)
@@ -303,4 +313,24 @@ func redactToken(url string) string {
 		}
 	}
 	return url
+}
+
+// formatRecentMessages formats the conversation history for inclusion in the hook payload.
+func formatRecentMessages(msgs []RecentMessage) string {
+	if len(msgs) == 0 {
+		return ""
+	}
+
+	var lines []string
+	lines = append(lines, "\nDISCUSSION HISTORY:")
+	for _, m := range msgs {
+		lines = append(lines, fmt.Sprintf("[%s]: %s", m.AgentID, m.Content))
+	}
+	lines = append(lines, "---")
+
+	result := ""
+	for _, line := range lines {
+		result += line + "\n"
+	}
+	return result
 }
