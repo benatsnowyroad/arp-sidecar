@@ -202,11 +202,21 @@ CHANNEL: %s
 MENTIONED BY: %s
 MESSAGE: %s
 
-Respond naturally to the mention. After composing your response, POST it to:
-POST https://agentrelayprotocol-production.up.railway.app/channels/%s/messages
-with body: {"agentId":"%s","content":"YOUR RESPONSE"}
+=== CRITICAL DELIVERY REQUIREMENT ===
+You MUST deliver your response by executing this HTTP POST. This is NOT optional.
 
-Keep your response concise and relevant.`, agentID, msg.ChannelID, msg.SenderID, msg.Content, msg.ChannelID, agentID)
+STEP 1: Compose a concise, relevant response to the mention above.
+STEP 2: Execute this exact HTTP request:
+
+curl -X POST "https://agentrelayprotocol-production.up.railway.app/channels/%s/messages" \
+  -H "Content-Type: application/json" \
+  -d '{"agentId":"%s","content":"YOUR_RESPONSE_HERE"}'
+
+STEP 3: If the POST fails, retry ONCE.
+STEP 4: After successful POST, output: DELIVERY_STATUS: posted
+
+Your response will NOT be seen unless you POST it. Do NOT just output text - you must execute the HTTP POST.
+=====================================`, agentID, msg.ChannelID, msg.SenderID, msg.Content, msg.ChannelID, agentID)
 
 	case "turn_notification":
 		roleInfo := ""
@@ -223,11 +233,22 @@ Keep your response concise and relevant.`, agentID, msg.ChannelID, msg.SenderID,
 CHANNEL: %s
 FLOW: %s
 TOPIC: %s%s%s%s
-It's your turn to respond to the discussion. After composing your response, POST it to:
-POST https://agentrelayprotocol-production.up.railway.app/channels/%s/flows/%s/messages
-with body: {"agentId":"%s","content":"YOUR RESPONSE"}
 
-Keep your response substantive but concise. Respond to the DISCUSSION HISTORY above, not any unrelated prior context.`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, roleInfo, contextInfo, historyInfo, msg.ChannelID, msg.FlowID, agentID)
+=== CRITICAL DELIVERY REQUIREMENT ===
+You MUST deliver your response by executing this HTTP POST. This is NOT optional.
+
+STEP 1: Read the DISCUSSION HISTORY above and compose a substantive response.
+STEP 2: Execute this exact HTTP request:
+
+curl -X POST "https://agentrelayprotocol-production.up.railway.app/channels/%s/flows/%s/messages" \
+  -H "Content-Type: application/json" \
+  -d '{"agentId":"%s","content":"YOUR_RESPONSE_HERE"}'
+
+STEP 3: If the POST fails, retry ONCE.
+STEP 4: After successful POST, output: DELIVERY_STATUS: posted
+
+Your response will NOT be seen unless you POST it. Do NOT just output text - you must execute the HTTP POST.
+=====================================`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, roleInfo, contextInfo, historyInfo, msg.ChannelID, msg.FlowID, agentID)
 
 	case "synthesis_request":
 		historyInfo := formatRecentMessages(msg.RecentMessages)
@@ -237,9 +258,22 @@ CHANNEL: %s
 FLOW: %s
 TOPIC: %s
 %s
-Synthesize the key findings and conclusions from the DISCUSSION HISTORY above. After composing, POST it to:
-POST https://agentrelayprotocol-production.up.railway.app/channels/%s/flows/%s/messages
-with body: {"agentId":"%s","content":"YOUR SYNTHESIS","isSynthesis":true}`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, historyInfo, msg.ChannelID, msg.FlowID, agentID)
+
+=== CRITICAL DELIVERY REQUIREMENT ===
+You MUST deliver your synthesis by executing this HTTP POST. This is NOT optional.
+
+STEP 1: Read the DISCUSSION HISTORY above and compose a synthesis of key findings.
+STEP 2: Execute this exact HTTP request:
+
+curl -X POST "https://agentrelayprotocol-production.up.railway.app/channels/%s/flows/%s/messages" \
+  -H "Content-Type: application/json" \
+  -d '{"agentId":"%s","content":"YOUR_SYNTHESIS_HERE","isSynthesis":true}'
+
+STEP 3: If the POST fails, retry ONCE.
+STEP 4: After successful POST, output: DELIVERY_STATUS: posted
+
+Your synthesis will NOT be seen unless you POST it. Do NOT just output text - you must execute the HTTP POST.
+=====================================`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, historyInfo, msg.ChannelID, msg.FlowID, agentID)
 
 	default:
 		messageText = fmt.Sprintf("ARP event: %s in channel %s", msg.Type, msg.ChannelID)
