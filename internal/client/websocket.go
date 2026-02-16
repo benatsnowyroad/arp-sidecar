@@ -1,11 +1,9 @@
 package client
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"math"
 	"math/rand/v2"
@@ -195,21 +193,39 @@ func (c *Client) forwardToHooks(ctx context.Context, msg *Message) {
 	agentID := c.cfg.AgentID
 
 	// Build the message content for OpenClaw
-	// Simplified prompts - sidecar handles POST, model just generates response
+	// v0.1.4: Include POST instructions since we can't poll OpenClaw session history
+	// The model will POST directly to ARP using the provided endpoint
 	var messageText string
-	var isFlow bool
-	var isSynthesis bool
+
+	// Build the ARP endpoint URL
+	var arpEndpoint string
+	var postBody string
+	if msg.FlowID != "" {
+		arpEndpoint = fmt.Sprintf("https://agentrelayprotocol-production.up.railway.app/channels/%s/flows/%s/messages", msg.ChannelID, msg.FlowID)
+	} else {
+		arpEndpoint = fmt.Sprintf("https://agentrelayprotocol-production.up.railway.app/channels/%s/messages", msg.ChannelID)
+	}
 
 	switch msg.Type {
 	case "mention_notification":
+		postBody = `{"agentId": "` + agentID + `", "content": "<YOUR_RESPONSE>"}`
 		messageText = fmt.Sprintf(`You are %s and were @mentioned in an ARP channel.
 
 CHANNEL: %s
 MENTIONED BY: %s
 MESSAGE: %s
 
-Respond naturally and concisely to the mention above. Your response will be automatically delivered.`, agentID, msg.ChannelID, msg.SenderID, msg.Content)
-		isFlow = false
+## REQUIRED ACTION
+After composing your response, POST it to ARP:
+
+curl -X POST "%s" \
+  -H "Authorization: Bearer %s" \
+  -H "Content-Type: application/json" \
+  -d '%s'
+
+Replace <YOUR_RESPONSE> with your actual message content (escape quotes and newlines properly for JSON).
+
+Respond naturally and concisely to the mention.`, agentID, msg.ChannelID, msg.SenderID, msg.Content, arpEndpoint, c.cfg.Token, postBody)
 
 	case "turn_notification":
 		roleInfo := ""
@@ -221,17 +237,28 @@ Respond naturally and concisely to the mention above. Your response will be auto
 			contextInfo = fmt.Sprintf("\nCONTEXT: %s\n", msg.ContextPrompt)
 		}
 		historyInfo := formatRecentMessages(msg.RecentMessages)
+		postBody = `{"agentId": "` + agentID + `", "content": "<YOUR_RESPONSE>"}`
 		messageText = fmt.Sprintf(`You are %s responding in an ARP bounded discussion.
 
 CHANNEL: %s
 FLOW: %s
 TOPIC: %s%s%s%s
 
-It's your turn. Provide a substantive response to the discussion above. Your response will be automatically delivered.`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, roleInfo, contextInfo, historyInfo)
-		isFlow = true
+## REQUIRED ACTION
+It's your turn. After composing your response, POST it to ARP:
+
+curl -X POST "%s" \
+  -H "Authorization: Bearer %s" \
+  -H "Content-Type: application/json" \
+  -d '%s'
+
+Replace <YOUR_RESPONSE> with your actual response content (escape quotes and newlines properly for JSON).
+
+Provide a substantive response to the discussion.`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, roleInfo, contextInfo, historyInfo, arpEndpoint, c.cfg.Token, postBody)
 
 	case "synthesis_request":
 		historyInfo := formatRecentMessages(msg.RecentMessages)
+		postBody = `{"agentId": "` + agentID + `", "content": "<YOUR_SYNTHESIS>", "isSynthesis": true}`
 		messageText = fmt.Sprintf(`You are %s and the TEAM LEAD for this ARP bounded discussion.
 
 CHANNEL: %s
@@ -239,13 +266,20 @@ FLOW: %s
 TOPIC: %s
 %s
 
-Synthesize the key findings, points of agreement, and actionable conclusions from the discussion above. Your synthesis will be automatically delivered.`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, historyInfo)
-		isFlow = true
-		isSynthesis = true
+## REQUIRED ACTION
+Synthesize the discussion, then POST your synthesis to ARP:
+
+curl -X POST "%s" \
+  -H "Authorization: Bearer %s" \
+  -H "Content-Type: application/json" \
+  -d '%s'
+
+Replace <YOUR_SYNTHESIS> with your synthesis (escape quotes and newlines properly for JSON).
+
+Synthesize the key findings, points of agreement, and actionable conclusions.`, agentID, msg.ChannelID, msg.FlowID, msg.Topic, historyInfo, arpEndpoint, c.cfg.Token, postBody)
 
 	default:
 		messageText = fmt.Sprintf("ARP event: %s in channel %s", msg.Type, msg.ChannelID)
-		isFlow = false
 	}
 
 	payload := hooks.Payload{
@@ -255,72 +289,14 @@ Synthesize the key findings, points of agreement, and actionable conclusions fro
 		Deliver:    false,
 	}
 
-	// Send hook and get runId
-	hookResp, err := c.hooks.Send(ctx, &payload)
+	// Send hook - model will POST response directly to ARP using provided instructions
+	_, err := c.hooks.Send(ctx, &payload)
 	if err != nil {
 		c.logger.Error("hook delivery failed", "type", msg.Type, "error", err)
 		return
 	}
 
-	c.logger.Info("hook delivered, polling for response", "type", msg.Type, "runId", hookResp.RunID)
-
-	// Poll for the assistant's response (max 2 minutes)
-	response, err := c.hooks.PollSessionForResponse(ctx, sessionKey, 2*time.Minute)
-	if err != nil {
-		c.logger.Error("failed to get response from session", "type", msg.Type, "error", err)
-		return
-	}
-
-	// POST the response to ARP
-	if err := c.postToARP(ctx, msg.ChannelID, msg.FlowID, response, isFlow, isSynthesis); err != nil {
-		c.logger.Error("failed to post response to ARP", "error", err)
-		return
-	}
-
-	c.logger.Info("response delivered to ARP", "type", msg.Type, "channelId", msg.ChannelID)
-}
-
-// postToARP posts a message to the ARP relay.
-func (c *Client) postToARP(ctx context.Context, channelID, flowID, content string, isFlow, isSynthesis bool) error {
-	var url string
-	if isFlow && flowID != "" {
-		url = fmt.Sprintf("https://agentrelayprotocol-production.up.railway.app/channels/%s/flows/%s/messages", channelID, flowID)
-	} else {
-		url = fmt.Sprintf("https://agentrelayprotocol-production.up.railway.app/channels/%s/messages", channelID)
-	}
-
-	body := map[string]interface{}{
-		"agentId": c.cfg.AgentID,
-		"content": content,
-	}
-	if isSynthesis {
-		body["isSynthesis"] = true
-	}
-
-	jsonBody, err := json.Marshal(body)
-	if err != nil {
-		return fmt.Errorf("marshaling body: %w", err)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(jsonBody))
-	if err != nil {
-		return fmt.Errorf("building request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return fmt.Errorf("sending request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("ARP returned HTTP %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	return nil
+	c.logger.Info("hook delivered with POST instructions", "type", msg.Type, "flowId", msg.FlowID)
 }
 
 func (c *Client) catchUpAll(ctx context.Context) {

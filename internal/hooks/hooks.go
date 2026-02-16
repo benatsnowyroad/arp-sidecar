@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/benatsnowyroad/arp-sidecar/internal/config"
@@ -27,18 +26,6 @@ type HookResponse struct {
 	OK        bool   `json:"ok"`
 	RunID     string `json:"runId"`
 	SessionID string `json:"sessionId"`
-}
-
-// SessionMessage represents a message from session history.
-type SessionMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-// SessionHistoryResponse is the response from session history endpoint.
-type SessionHistoryResponse struct {
-	OK       bool             `json:"ok"`
-	Messages []SessionMessage `json:"messages"`
 }
 
 // Forwarder sends event payloads to the OpenClaw hooks endpoint.
@@ -93,71 +80,4 @@ func (f *Forwarder) Send(ctx context.Context, p *Payload) (*HookResponse, error)
 
 	f.logger.Debug("hook delivered", "name", p.Name, "sessionKey", p.SessionKey, "status", resp.StatusCode, "runId", hookResp.RunID)
 	return &hookResp, nil
-}
-
-// PollSessionForResponse polls the session history until we get an assistant response.
-// It returns the assistant's message content.
-func (f *Forwarder) PollSessionForResponse(ctx context.Context, sessionKey string, maxWait time.Duration) (string, error) {
-	// Build the session history URL
-	// OpenClaw session history: GET /sessions/{sessionKey}/history
-	baseURL := strings.TrimSuffix(f.hooksURL, "/hooks/agent")
-	baseURL = strings.TrimSuffix(baseURL, "/hooks")
-	historyURL := fmt.Sprintf("%s/api/sessions/%s/history?limit=5", baseURL, sessionKey)
-
-	deadline := time.Now().Add(maxWait)
-	pollInterval := 2 * time.Second
-	lastMessageCount := 0
-
-	for time.Now().Before(deadline) {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(pollInterval):
-		}
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, historyURL, nil)
-		if err != nil {
-			return "", fmt.Errorf("building history request: %w", err)
-		}
-		req.Header.Set("Authorization", "Bearer "+f.hooksToken)
-
-		resp, err := f.client.Do(req)
-		if err != nil {
-			f.logger.Warn("polling session failed", "error", err)
-			continue
-		}
-
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 32768))
-		resp.Body.Close()
-
-		if resp.StatusCode != 200 {
-			f.logger.Debug("session history not ready", "status", resp.StatusCode)
-			continue
-		}
-
-		var historyResp SessionHistoryResponse
-		if err := json.Unmarshal(respBody, &historyResp); err != nil {
-			f.logger.Warn("could not parse history response", "error", err)
-			continue
-		}
-
-		// Look for new assistant message
-		if len(historyResp.Messages) > lastMessageCount {
-			for i := len(historyResp.Messages) - 1; i >= 0; i-- {
-				msg := historyResp.Messages[i]
-				if msg.Role == "assistant" && msg.Content != "" {
-					f.logger.Info("got assistant response", "length", len(msg.Content))
-					return msg.Content, nil
-				}
-			}
-			lastMessageCount = len(historyResp.Messages)
-		}
-
-		// Increase poll interval gradually
-		if pollInterval < 5*time.Second {
-			pollInterval += 500 * time.Millisecond
-		}
-	}
-
-	return "", fmt.Errorf("timeout waiting for assistant response after %v", maxWait)
 }
